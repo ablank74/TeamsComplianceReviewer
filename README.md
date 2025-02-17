@@ -1,0 +1,1 @@
+This takes Microsoft Purview compliance export of Teams convesations in a single PST.  The PST is opened with Outlook and exported to CSV.  It can then be loaded by the index.html to view the conversation, change the participant point of view, and search by conversationID.
