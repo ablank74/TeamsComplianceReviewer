@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV to Web Interface</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+</head>
+<body>
+
+<div class="container mt-5">
+    <div class="row mb-3">
+        <div class="col">
+            <input type="file" id="csvFileInput" accept=".csv" />
+            <button onclick="handleFile()">Load Data</button>
+        </div>
+    </div>
+    <div class="row mb-3">
+        <div class="col">
+            <div class="input-group">
+                <input type="text" id="searchInput" class="form-control" placeholder="Search ConversationID...">
+                <button class="btn btn-primary" onclick="searchConversation()">Search</button>
+            </div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-md-3">
+            <h4>Chat Groups</h4>
+            <ul id="groups-list" class="list-group"></ul>
+        </div>
+        <div class="col-md-9">
+            <div id="chat-header" class="mb-3"></div>
+            <div id="messages" class="border rounded p-3" style="height: 600px; overflow-y: auto;"></div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+<script>
+    let data = [];
+    let groupStatus = {};
+    let currentConversation = null;
+    let currentGroupKey = null;
+
+    function handleFile() {
+        const file = document.getElementById('csvFileInput').files[0];
+        Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            complete: function(results) {
+                data = results.data;
+                populateGroups();
+            }
+        });
+    }
+
+    function populateGroups() {
+        // Group messages by participants (Group field)
+        const conversations = {};
+        data.forEach(message => {
+            const groupKey = message.Group.split('|').sort().join('|');
+            if (!conversations[groupKey]) {
+                conversations[groupKey] = {
+                    participants: new Set(message.Group.split('|')),
+                    messages: []
+                };
+            }
+            conversations[groupKey].messages.push(message);
+        });
+
+        const groupsList = document.getElementById('groups-list');
+        groupsList.innerHTML = '';
+        
+        // Sort conversations by most recent message
+        const sortedConversations = Object.entries(conversations)
+            .sort(([, a], [, b]) => {
+                const lastMessageA = new Date(Math.max(...a.messages.map(m => new Date(m.Received))));
+                const lastMessageB = new Date(Math.max(...b.messages.map(m => new Date(m.Received))));
+                return lastMessageB - lastMessageA;
+            });
+
+        sortedConversations.forEach(([groupKey, conversation], index) => {
+            const li = document.createElement('li');
+            li.className = 'list-group-item';
+            li.style.cursor = 'pointer';
+            li.dataset.groupKey = groupKey;
+            
+            // Get the last message and its timestamp
+            const lastMessage = conversation.messages
+                .sort((a, b) => new Date(b.Received) - new Date(a.Received))[0];
+            const lastMessageTime = new Date(lastMessage.Received).toLocaleDateString();
+            
+            li.innerHTML = `
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <strong>Group Chat ${index + 1}</strong><br>
+                        <small>${conversation.participants.size} participants</small>
+                        <div class="text-muted small text-truncate" style="max-width: 200px;">
+                            ${Array.from(conversation.participants)
+                                .map(p => p.split('@')[0])
+                                .join(', ')}
+                        </div>
+                    </div>
+                    <small class="text-muted">${lastMessageTime}</small>
+                </div>
+            `;
+            li.onclick = () => displayConversation(groupKey, conversation);
+            groupsList.appendChild(li);
+        });
+    }
+
+    function displayConversation(groupKey, conversation, highlightConversationId = null) {
+        currentConversation = conversation;
+        currentGroupKey = groupKey;
+        
+        const headerDiv = document.getElementById('chat-header');
+        const messagesDiv = document.getElementById('messages');
+        
+        // Display conversation header with participants and metadata
+        const firstMessage = conversation.messages
+            .sort((a, b) => new Date(a.Received) - new Date(b.Received))[0];
+        const lastMessage = conversation.messages
+            .sort((a, b) => new Date(b.Received) - new Date(a.Received))[0];
+
+        headerDiv.innerHTML = `
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Group Chat Details</h5>
+                    <div class="conversation-metadata mb-2">
+                        <small class="text-muted">
+                            Started: ${new Date(firstMessage.Received).toLocaleString()}<br>
+                            Last activity: ${new Date(lastMessage.Received).toLocaleString()}
+                        </small>
+                    </div>
+                    <div class="participant-list">
+                        <h6>View conversation as:</h6>
+                        <div id="participant-badges">
+                            ${Array.from(conversation.participants).map(p => `
+                                <span class="badge bg-primary me-1 mb-1 participant-badge" 
+                                      onclick="changePerspective('${p}')"
+                                      data-participant="${p}">
+                                    ${p.split('@')[0]}
+                                </span>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        displayMessages(conversation.messages, highlightConversationId);
+    }
+
+    function displayMessages(messages, highlightConversationId = null, perspectiveSender = null) {
+        const messagesDiv = document.getElementById('messages');
+        messagesDiv.innerHTML = '';
+        
+        messages.sort((a, b) => new Date(a.Received) - new Date(b.Received));
+
+        let currentDate = null;
+        let highlightedMessageElement = null;
+
+        messages.forEach(message => {
+            const messageDate = new Date(message.Received);
+            const dateStr = messageDate.toLocaleDateString();
+
+            // Add date separator if it's a new day
+            if (dateStr !== currentDate) {
+                currentDate = dateStr;
+                const dateSeparator = document.createElement('div');
+                dateSeparator.className = 'date-separator text-center my-3';
+                dateSeparator.innerHTML = `<span class="badge bg-secondary">${dateStr}</span>`;
+                messagesDiv.appendChild(dateSeparator);
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message-container mb-3';
+            
+            if (highlightConversationId && message.ConversationID === highlightConversationId) {
+                messageDiv.classList.add('highlighted-message');
+                highlightedMessageElement = messageDiv;
+            }
+
+            const sender = message.Sender.split('@')[0];
+            const timestamp = messageDate.toLocaleTimeString();
+            const recipients = message.Recipients.split('|').map(r => r.split('@')[0]).join(', ');
+
+            // Determine message alignment based on perspective
+            const isFromPerspective = perspectiveSender ? 
+                message.Sender === perspectiveSender : 
+                message.Sender === currentConversation.messages[0].Sender;
+
+            messageDiv.innerHTML = `
+                <div class="d-flex ${isFromPerspective ? 'justify-content-end' : 'justify-content-start'}">
+                    <div class="message-content ${isFromPerspective ? 'outgoing' : 'incoming'}">
+                        <div class="sender-name"><strong>${sender}</strong></div>
+                        <div class="message-body">${formatMessageBody(message.Body)}</div>
+                        <div class="message-metadata">
+                            <small class="time">${timestamp}</small>
+                            <small class="recipients" title="Recipients: ${recipients}">
+                                ${message.Recipients.split('|').length} recipient(s)
+                            </small>
+                        </div>
+                    </div>
+                </div>
+            `;
+            messagesDiv.appendChild(messageDiv);
+        });
+
+        if (highlightedMessageElement) {
+            setTimeout(() => {
+                highlightedMessageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
+        } else {
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+    }
+
+    function formatMessageBody(body) {
+        // Handle URLs in messages
+        const urlRegex = /<https?:\/\/[^>]+>/g;
+        const formattedBody = body.replace(urlRegex, url => {
+            const cleanUrl = url.slice(1, -1); // Remove < and >
+            return `<a href="${cleanUrl}" target="_blank" class="text-white">Link</a>`;
+        });
+        
+        // Handle line breaks
+        return formattedBody.replace(/\n/g, '<br>');
+    }
+
+    function searchConversation() {
+        const searchId = document.getElementById('searchInput').value.trim();
+        if (!searchId) return;
+
+        // Find the message with the matching ConversationID
+        const targetMessage = data.find(message => message.ConversationID === searchId);
+        if (!targetMessage) {
+            alert('ConversationID not found');
+            return;
+        }
+
+        // Find the group that contains this message
+        const groupKey = targetMessage.Group.split('|').sort().join('|');
+        const conversations = {};
+        data.forEach(message => {
+            const messageGroupKey = message.Group.split('|').sort().join('|');
+            if (!conversations[messageGroupKey]) {
+                conversations[messageGroupKey] = {
+                    participants: new Set(message.Group.split('|')),
+                    messages: []
+                };
+            }
+            conversations[messageGroupKey].messages.push(message);
+        });
+
+        // Display the conversation
+        if (conversations[groupKey]) {
+            displayConversation(groupKey, conversations[groupKey], searchId);
+            
+            // Highlight the matching group in the list
+            const groupItems = document.querySelectorAll('#groups-list li');
+            groupItems.forEach(item => {
+                item.classList.remove('active');
+                if (item.dataset.groupKey === groupKey) {
+                    item.classList.add('active');
+                }
+            });
+        }
+    }
+
+    function changePerspective(sender) {
+        if (!currentConversation) return;
+
+        // Update badge styling
+        const badges = document.querySelectorAll('.participant-badge');
+        badges.forEach(badge => {
+            if (badge.dataset.participant === sender) {
+                badge.classList.remove('bg-primary');
+                badge.classList.add('bg-success');
+            } else {
+                badge.classList.remove('bg-success');
+                badge.classList.add('bg-primary');
+            }
+        });
+        
+        // Display messages from new perspective
+        displayMessages(currentConversation.messages, null, sender);
+    }
+</script>
+
+<style>
+    .message-container {
+        margin-bottom: 1rem;
+    }
+    .message-content {
+        max-width: 80%;
+        padding: 0.75rem;
+        border-radius: 1rem;
+        position: relative;
+    }
+    .message-content.incoming {
+        background-color: #f0f0f0;
+        margin-right: auto;
+        border-bottom-left-radius: 0.25rem;
+    }
+    .message-content.outgoing {
+        background-color: #007bff;
+        color: white;
+        margin-left: auto;
+        border-bottom-right-radius: 0.25rem;
+    }
+    .message-metadata {
+        font-size: 0.75rem;
+        opacity: 0.8;
+        margin-top: 0.25rem;
+    }
+    .date-separator {
+        position: relative;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .sender-name {
+        font-size: 0.9rem;
+        margin-bottom: 0.25rem;
+    }
+    .recipients {
+        margin-left: 0.5rem;
+        cursor: help;
+    }
+    .participant-list {
+        max-height: 100px;
+        overflow-y: auto;
+        padding: 0.5rem;
+        background-color: #f8f9fa;
+        border-radius: 0.25rem;
+    }
+    .highlighted-message {
+        animation: highlight 2s ease-in-out;
+    }
+    
+    @keyframes highlight {
+        0% { background-color: rgba(255, 255, 0, 0.5); }
+        100% { background-color: transparent; }
+    }
+
+    .list-group-item.active {
+        background-color: #007bff;
+        color: white;
+    }
+
+    .participant-badge {
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+
+    .participant-badge:hover {
+        opacity: 0.8;
+        transform: scale(1.05);
+    }
+
+    #participant-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.5rem;
+    }
+
+    .message-content.outgoing {
+        background-color: #007bff;
+        color: white;
+        margin-left: auto;
+        border-bottom-right-radius: 0.25rem;
+    }
+
+    .message-content.incoming {
+        background-color: #f0f0f0;
+        color: black;
+        margin-right: auto;
+        border-bottom-left-radius: 0.25rem;
+    }
+</style>
+
+</body>
+</html>
